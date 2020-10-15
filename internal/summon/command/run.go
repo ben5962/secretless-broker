@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"sort"
 	"strings"
 
 	"github.com/cyberark/summon/secretsyml"
@@ -26,13 +27,28 @@ type Subcommand struct {
 
 // buildEnvironment builds the environment strings from the map of secrets values, along with the
 // secrets configuration metadata and the temp files location.
-func buildEnvironment(secrets map[string]string, secretsMap secretsyml.SecretsMap, tempFactory *TempFactory) (env []string, err error) {
-	env = make([]string, len(secrets))
-	for key, value := range secrets {
-		envvar := formatForEnv(key, value, secretsMap[key], tempFactory)
+func buildEnvironment(
+	secrets map[string]string,
+	secretsMap secretsyml.SecretsMap,
+	tempFactory *TempFactory,
+) ([]string, error) {
+	env := make([]string, 0, len(secrets))
+	keys := make([]string, 0, len(secrets))
+
+	for k := range secrets {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+
+	for _, key := range keys {
+		envvar, err := formatForEnv(key, secrets[key], secretsMap[key], tempFactory)
+		if err != nil {
+			return nil, err
+		}
 		env = append(env, envvar)
 	}
-	return
+
+	return env, nil
 }
 
 // resolveSecrets obtains the value of each requested secret.
@@ -73,7 +89,10 @@ func resolveSecrets(provider plugin_v1.Provider, secretsMap secretsyml.SecretsMa
 		}
 	}
 	if len(errorStrings) > 0 {
-		err = fmt.Errorf(strings.Join(errorStrings, "\n"))
+		// Sort the error strings to provide deterministic output
+		sort.Strings(errorStrings)
+
+		err = fmt.Errorf(strings.Join(errorStrings, "; "))
 		return nil, err
 	}
 
@@ -111,13 +130,22 @@ func (sc *Subcommand) runSubcommand(env []string) (err error) {
 
 // formatForEnv returns a string in %k=%v format, where %k=namespace of the secret and
 // %v=the secret value or path to a temporary file containing the secret
-func formatForEnv(key string, value string, spec secretsyml.SecretSpec, tempFactory *TempFactory) string {
+func formatForEnv(
+	key string,
+	value string,
+	spec secretsyml.SecretSpec,
+	tempFactory *TempFactory,
+) (string, error) {
 	if spec.IsFile() {
-		fname := tempFactory.Push(value)
+		fname, err := tempFactory.Push(value)
+		if err != nil {
+			return "", err
+		}
+
 		value = fname
 	}
 
-	return fmt.Sprintf("%s=%s", key, value)
+	return fmt.Sprintf("%s=%s", key, value), nil
 }
 
 // Run encapsulates the logic of Action without cli Context for easier testing
